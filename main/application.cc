@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <limits>
 
@@ -685,23 +686,40 @@ void Application::InitializeProtocol() {
                 if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
                     glyphs.clear();
                 }
-                ESP_LOGI(TAG, ">> %s", text->valuestring);
-                Schedule([display, message = std::string(text->valuestring),
-                          glyphs = std::move(glyphs), bpp]() {
-                    display->AddTextGlyphs(glyphs, bpp);
-                    display->SetChatMessage("user", message.c_str());
-                });
-            }
-            // STT-ONLY 模式：只识别，不回复
-            if (protocol_) {
-                protocol_->SendAbortSpeaking(kAbortReasonNone);
-                Schedule([this]() {
+                // STT-ONLY：跳过唤醒词回显。服务器会把唤醒词音频识别成第一条 stt，
+                // 若在此处 abort+关通道，后续查询语句的 ASR 会被掐断。因此唤醒词
+                // 回显不做任何处理（不显示、不关闭），让查询音频继续流到服务器。
+                // 只对真正的查询语句生效：显示 + abort + 关通道 + 回 idle，不回复。
+                bool is_wake_word_echo = false;
+                const std::string& last_wake_word = audio_service_.GetLastWakeWord();
+                if (!last_wake_word.empty()) {
+                    std::string lower_text(text->valuestring);
+                    std::string lower_wake(last_wake_word);
+                    std::transform(lower_text.begin(), lower_text.end(), lower_text.begin(),
+                                   [](unsigned char c) { return std::tolower(c); });
+                    std::transform(lower_wake.begin(), lower_wake.end(), lower_wake.begin(),
+                                   [](unsigned char c) { return std::tolower(c); });
+                    is_wake_word_echo = (lower_text == lower_wake);
+                }
+                if (!is_wake_word_echo) {
+                    ESP_LOGI(TAG, ">> %s", text->valuestring);
+                    Schedule([display, message = std::string(text->valuestring),
+                              glyphs = std::move(glyphs), bpp]() {
+                        display->AddTextGlyphs(glyphs, bpp);
+                        display->SetChatMessage("user", message.c_str());
+                    });
+                    // STT-ONLY 模式：只识别，不回复
                     if (protocol_) {
-                        protocol_->CloseAudioChannel();
+                        protocol_->SendAbortSpeaking(kAbortReasonNone);
+                        Schedule([this]() {
+                            if (protocol_) {
+                                protocol_->CloseAudioChannel();
+                            }
+                            aborted_ = true;
+                            SetDeviceState(kDeviceStateIdle);
+                        });
                     }
-                    aborted_ = true;
-                    SetDeviceState(kDeviceStateIdle);
-                });
+                }
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
