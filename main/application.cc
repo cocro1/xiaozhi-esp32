@@ -577,10 +577,9 @@ void Application::InitializeProtocol() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
 
-    protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
-        }
+    protocol_->OnIncomingAudio([](std::unique_ptr<AudioStreamPacket> /*packet*/) {
+        // STT-only: discard reply audio even if it arrives before STT or after abort.
+        // Never enqueue it for decoding/playback, regardless of device state.
     });
 
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -607,6 +606,12 @@ void Application::InitializeProtocol() {
         auto type = cJSON_GetObjectItem(root, "type");
         if (!cJSON_IsString(type)) {
             ESP_LOGW(TAG, "Incoming JSON message has no type");
+            return;
+        }
+        // STT-only: reject server replies before they can schedule playback or
+        // change the listening state. Notify also carries server-provided audio.
+        if (strcmp(type->valuestring, "tts") == 0 || strcmp(type->valuestring, "llm") == 0 ||
+            strcmp(type->valuestring, "notify") == 0) {
             return;
         }
         if (strcmp(type->valuestring, "notify") == 0) {
