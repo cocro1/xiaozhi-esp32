@@ -170,3 +170,5 @@
 </a>
 
 <!-- build trigger: STT-ONLY variant, bread-compact-wifi -->
+
+<!-- build trigger 2: enable fork actions, fire on: push -->
