@@ -33,6 +33,8 @@
 #define TOUCH_BUTTON_GPIO       GPIO_NUM_47
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_40
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_39
+// STT-only: 外接按键（GPIO1 ↔ GND），按一次启动激活并监听，再按一次停止监听
+#define EXT_BUTTON_GPIO         GPIO_NUM_1
 
 #define DISPLAY_SDA_PIN GPIO_NUM_41
 #define DISPLAY_SCL_PIN GPIO_NUM_42

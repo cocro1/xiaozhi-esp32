@@ -31,6 +31,7 @@ private:
     Button touch_button_;
     Button volume_up_button_;
     Button volume_down_button_;
+    Button ext_button_;
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {
@@ -145,6 +146,25 @@ private:
             GetAudioCodec()->SetOutputVolume(0);
             GetDisplay()->ShowNotification(Lang::Strings::MUTED);
         });
+
+        // STT-only: 外接按键（GPIO1 ↔ GND）切换监听。
+        // 按一次：启动激活并监听（打开音频通道，持续采集说话）；
+        // 再按一次：停止监听（关闭通道，回到 idle）。
+        ext_button_.OnClick([this]() {
+            auto& app = Application::GetInstance();
+            auto state = app.GetDeviceState();
+            if (state == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
+            }
+            if (state == kDeviceStateIdle) {
+                app.StartListening();
+            } else if (state == kDeviceStateListening) {
+                app.StopListening();
+            } else {
+                app.ToggleChatState();
+            }
+        });
     }
 
     // 物联网初始化，逐步迁移到 MCP 协议
@@ -157,7 +177,8 @@ public:
         boot_button_(BOOT_BUTTON_GPIO),
         touch_button_(TOUCH_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
-        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
+        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO),
+        ext_button_(EXT_BUTTON_GPIO) {
         InitializeDisplayI2c();
         InitializeSsd1306Display();
         InitializeButtons();
