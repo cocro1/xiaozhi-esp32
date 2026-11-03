@@ -595,8 +595,7 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
-            auto display = Board::GetInstance().GetDisplay();
-            display->SetChatMessage("system", "");
+            // Keep the last transcription visible when the STT channel closes.
             SetDeviceState(kDeviceStateIdle);
         });
     });
@@ -708,8 +707,9 @@ void Application::InitializeProtocol() {
                 }
                 if (!is_wake_word_echo) {
                     ESP_LOGI(TAG, ">> %s", text->valuestring);
-                    Schedule([display, message = std::string(text->valuestring),
+                    Schedule([this, display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
+                        last_stt_text_ = message;
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("user", message.c_str());
                     });
@@ -1074,6 +1074,9 @@ void Application::HandleStateChangedEvent() {
                 display->ClearChatMessages();  // Clear messages first
                 display->SetEmotion(
                     "neutral");  // Then set emotion (wechat mode checks child count)
+                if (!last_stt_text_.empty()) {
+                    display->SetChatMessage("user", last_stt_text_.c_str());
+                }
             }
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
