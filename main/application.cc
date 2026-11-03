@@ -581,6 +581,8 @@ void Application::InitializeProtocol() {
         // STT-only: discard reply audio even if it arrives before STT or after abort.
         // Never enqueue it for decoding/playback, regardless of device state.
     });
+    // build-trigger: retain-last-transcription (6883351) - harmless comment to
+    // force CI select-changed to build bread-compact-wifi for the final firmware.
 
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
