@@ -148,6 +148,11 @@ void Application::Initialize() {
                 msg += data;
                 display->ShowNotification(msg.c_str(), 30000);
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI
+                // WiFi is up; BluFi has torn the BT controller down, so re-init it
+                // for BLE HID (this device acts as a BT keyboard/mouse for a phone).
+                ble_hid_start();
+#endif
                 break;
             }
             case NetworkEvent::Disconnected:
@@ -155,6 +160,10 @@ void Application::Initialize() {
                 break;
             case NetworkEvent::WifiConfigModeEnter:
                 // WiFi config mode enter is handled by WifiBoard internally
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI
+                // Tear BLE HID down before re-entering provisioning.
+                ble_hid_stop();
+#endif
                 break;
             case NetworkEvent::WifiConfigModeExit:
                 // WiFi config mode exit is handled by WifiBoard internally
