@@ -9,6 +9,7 @@
 #include "lamp_controller.h"
 #include "led/single_led.h"
 #include "assets/lang_config.h"
+#include "ble_hid/ble_hid.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -183,6 +184,18 @@ public:
         InitializeSsd1306Display();
         InitializeButtons();
         InitializeTools();
+
+        // After WiFi connects, the BluFi stack has torn the BT controller down.
+        // Re-init it for BLE HID so a phone can pair with this device as a
+        // keyboard/mouse. Tear it down again if the user re-enters config mode.
+        SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {
+            (void)data;
+            if (event == NetworkEvent::Connected) {
+                ble_hid_start();
+            } else if (event == NetworkEvent::WifiConfigModeEnter) {
+                ble_hid_stop();
+            }
+        });
     }
 
     virtual Led* GetLed() override {

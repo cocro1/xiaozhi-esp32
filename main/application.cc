@@ -4,6 +4,10 @@
 #include "audio_codec.h"
 #include "board.h"
 #include "cjson_utils.h"
+
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI
+#include "ble_hid/ble_hid.h"
+#endif
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
@@ -709,6 +713,13 @@ void Application::InitializeProtocol() {
                 }
                 if (!is_wake_word_echo) {
                     ESP_LOGI(TAG, ">> %s", text->valuestring);
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI
+                    // 语音→手机：开启 phone_mode 时，把识别文字作为键盘输入敲进已配对的手机。
+                    // 注意 BLE HID 键盘只能输入 ASCII；中文需经手机输入法，无法直出。
+                    if (ble_hid_phone_mode()) {
+                        ble_hid_send_text(text->valuestring);
+                    }
+#endif
                     Schedule([this, display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
                         last_stt_text_ = message;

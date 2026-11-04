@@ -64,10 +64,34 @@ list(APPEND SOURCES
     "boards/common/sy6970.cc"
     "boards/common/system_reset.cc"
 )
+# BLE HID (keyboard + mouse) for phone automation — only built for bread-compact-wifi.
+# The firmware re-initialises the BT controller for HID after WiFi connects, so
+# BT must be enabled in sdkconfig for this board (see its config.json).
+if(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI)
+    list(APPEND SOURCES
+        "ble_hid/ble_hid_core.c"
+        "ble_hid/ble_hid_tcp.c"
+        "ble_hid/esp_hidd_prf_api.c"
+        "ble_hid/hid_dev.c"
+        "ble_hid/hid_device_le_prf.c"
+    )
+    # The vendor HID profile code is third-party; relax its warnings so the
+    # strict default flags don't turn them into errors.
+    set_source_files_properties(
+        ble_hid/hid_device_le_prf.c
+        ble_hid/esp_hidd_prf_api.c
+        ble_hid/hid_dev.c
+        PROPERTIES COMPILE_FLAGS "-Wno-unused-const-variable -Wno-error"
+    )
+endif()
+
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET)
     list(APPEND SOURCES "boards/common/ethernet_board.cc")
 endif()
 list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
+if(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI)
+    list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/ble_hid)
+endif()
 
 
 idf_build_get_property(build_components BUILD_COMPONENTS)
@@ -1217,6 +1241,9 @@ idf_component_register(SRCS ${SOURCES}
                         console
                         efuse
                         bt
+                        nvs_flash
+                        cjson
+                        lwip
                         fatfs
                         xiaozhi-fonts
                         ${MAIN_PRIV_REQUIRES_EXTRA}
