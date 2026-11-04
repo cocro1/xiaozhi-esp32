@@ -272,7 +272,8 @@ void ble_hid_send_text(const char *utf8)
             continue;
         }
         uint8_t mod = 0, code = 0;
-        if (ble_hid_ascii_to_key(c, &mod, &code) == 0) {
+        code = ble_hid_ascii_to_key(c, &mod);
+        if (code == 0) {
             ESP_LOGW(TAG, "skip unsupported char '%c'", c);
             continue;
         }
