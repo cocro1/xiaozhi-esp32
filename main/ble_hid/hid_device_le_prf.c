@@ -27,36 +27,51 @@ struct prf_char_pres_fmt
 static hid_report_map_t hid_rpt_map[HID_NUM_REPORTS];
 
 // HID Report Map characteristic value
-// Keyboard report descriptor (using format for Boot interface descriptor)
+//
+// Report ID 1 is now a *Digitizer / Touch Screen* (absolute coordinates),
+// replacing the old relative mouse. Android does NOT support "absolute mice":
+// its input stack discards ABS X/Y coming from a Generic Desktop / Mouse
+// collection, and relative mice suffer from non-linear pointer acceleration.
+// A Touch Screen collection makes the phone emit real touch events at exact
+// screen coordinates (no cursor, no acceleration, no boundary clamping).
+//
+// The report is still exactly 5 bytes, so the existing GATT Input Report
+// characteristic (Report ID 1) and hid_rpt_map[0] need no changes:
+//   byte 0 : bit0 Tip Switch, bit1 In Range, bits2..7 Contact ID
+//   byte 1 : X low          byte 2 : X high
+//   byte 3 : Y low          byte 4 : Y high
+// X/Y are unsigned little-endian in [0, 32767], mapped to the whole display.
 static const uint8_t hidReportMap[] = {
-    0x05, 0x01,  // Usage Page (Generic Desktop)
-    0x09, 0x02,  // Usage (Mouse)
-    0xA1, 0x01,  // Collection (Application)
-    0x85, 0x01,  // Report Id (1)
-    0x09, 0x01,  //   Usage (Pointer)
-    0xA1, 0x00,  //   Collection (Physical)
-    0x05, 0x09,  //     Usage Page (Buttons)
-    0x19, 0x01,  //     Usage Minimum (01) - Button 1
-    0x29, 0x03,  //     Usage Maximum (03) - Button 3
-    0x15, 0x00,  //     Logical Minimum (0)
-    0x25, 0x01,  //     Logical Maximum (1)
-    0x75, 0x01,  //     Report Size (1)
-    0x95, 0x03,  //     Report Count (3)
-    0x81, 0x02,  //     Input (Data, Variable, Absolute) - Button states
-    0x75, 0x05,  //     Report Size (5)
-    0x95, 0x01,  //     Report Count (1)
-    0x81, 0x01,  //     Input (Constant) - Padding or Reserved bits
-    0x05, 0x01,  //     Usage Page (Generic Desktop)
-    0x09, 0x30,  //     Usage (X)
-    0x09, 0x31,  //     Usage (Y)
-    0x09, 0x38,  //     Usage (Wheel)
-    0x15, 0x81,  //     Logical Minimum (-127)
-    0x25, 0x7F,  //     Logical Maximum (127)
-    0x75, 0x08,  //     Report Size (8)
-    0x95, 0x03,  //     Report Count (3)
-    0x81, 0x06,  //     Input (Data, Variable, Relative) - X & Y coordinate
-    0xC0,        //   End Collection
-    0xC0,        // End Collection
+    0x05, 0x0D,                    // Usage Page (Digitizer)
+    0x09, 0x04,                    // Usage (Touch Screen)
+    0xA1, 0x01,                    // Collection (Application)
+    0x85, 0x01,                    //   Report Id (1)  <- reuses mouse GATT report
+    0x09, 0x22,                    //   Usage (Finger)
+    0xA1, 0x02,                    //   Collection (Logical)
+    0x09, 0x42,                    //     Usage (Tip Switch)
+    0x15, 0x00,                    //     Logical Minimum (0)
+    0x25, 0x01,                    //     Logical Maximum (1)
+    0x75, 0x01,                    //     Report Size (1)
+    0x95, 0x01,                    //     Report Count (1)
+    0x81, 0x02,                    //     Input (Data, Var, Abs)
+    0x09, 0x32,                    //     Usage (In Range)
+    0x81, 0x02,                    //     Input (Data, Var, Abs)  [size 1, count 1]
+    0x09, 0x51,                    //     Usage (Contact ID)
+    0x25, 0x3F,                    //     Logical Maximum (63)
+    0x75, 0x06,                    //     Report Size (6)
+    0x95, 0x01,                    //     Report Count (1)
+    0x81, 0x02,                    //     Input (Data, Var, Abs)
+    0x05, 0x01,                    //     Usage Page (Generic Desktop)
+    0x09, 0x30,                    //     Usage (X)
+    0x15, 0x00,                    //     Logical Minimum (0)
+    0x27, 0xFF, 0x7F, 0x00, 0x00, //     Logical Maximum (32767)
+    0x75, 0x10,                    //     Report Size (16)
+    0x95, 0x01,                    //     Report Count (1)
+    0x81, 0x02,                    //     Input (Data, Var, Abs)
+    0x09, 0x31,                    //     Usage (Y)
+    0x81, 0x02,                    //     Input (Data, Var, Abs) [16 bit, 0..32767]
+    0xC0,                          //   End Collection (Logical)
+    0xC0,                          // End Collection (Application)
 
     0x05, 0x01,  // Usage Pg (Generic Desktop)
     0x09, 0x06,  // Usage (Keyboard)

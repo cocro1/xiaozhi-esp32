@@ -148,3 +148,30 @@ void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mi
                         HID_RPT_ID_MOUSE_IN, HID_REPORT_TYPE_INPUT, HID_MOUSE_IN_RPT_LEN, buffer);
     return;
 }
+
+/*
+ * Absolute touch report for the Digitizer / Touch Screen collection.
+ * SAME GATT characteristic and SAME 5-byte length as the old mouse report:
+ *   [0] = tip(bit0) | in_range(bit1) | contact_id<<2
+ *   [1..2] = X (LE, 0..32767), [3..4] = Y (LE, 0..32767)
+ * `down` drives Tip Switch; `in_range` should be 1 while a finger is present.
+ * To generate an Android ACTION_DOWN send down=true, ACTION_UP send down=false.
+ */
+void esp_hidd_send_touch_value(uint16_t conn_id, bool down, bool in_range,
+                               uint16_t x, uint16_t y)
+{
+    uint8_t buffer[HID_MOUSE_IN_RPT_LEN];
+
+    if (x > HID_TOUCH_MAX) x = HID_TOUCH_MAX;
+    if (y > HID_TOUCH_MAX) y = HID_TOUCH_MAX;
+
+    buffer[0] = (down ? 0x01 : 0x00) | (in_range ? 0x02 : 0x00);
+    buffer[1] = (uint8_t)(x & 0xFF);
+    buffer[2] = (uint8_t)(x >> 8);
+    buffer[3] = (uint8_t)(y & 0xFF);
+    buffer[4] = (uint8_t)(y >> 8);
+
+    hid_dev_send_report(hidd_le_env.gatt_if, conn_id,
+                        HID_RPT_ID_MOUSE_IN, HID_REPORT_TYPE_INPUT,
+                        HID_MOUSE_IN_RPT_LEN, buffer);
+}

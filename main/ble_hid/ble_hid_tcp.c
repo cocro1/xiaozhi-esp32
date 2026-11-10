@@ -11,7 +11,19 @@
  *   {"t":"media","c":233,"p":1}      // consumer code (233=VOL_UP), p=press 1/0
  *   {"t":"phonemode","v":1}          // auto-type STT to phone on/off
  *   {"t":"advertise","on":1}         // restart BLE advertising
- *   {"t":"status"}                   // -> {"ok":true,"ready":..,"connected":..,"mode":..}
+ *   {"t":"status"}                   // -> {"ok":true,"ready":..,"connected":..,"mode":..,
+ *                                   //     "abs":1,"fw":"abs-touch-v1","max":32767,..}
+ *
+ * Absolute Touch Screen commands (x/y are HID units 0..32767 unless *px*):
+ *   {"t":"abscfg","w":1080,"h":2412} // set logical screen size for px commands
+ *   {"t":"absdown","x":16000,"y":8000}
+ *   {"t":"absup"}
+ *   {"t":"abspos","x":16000,"y":8000}          // move while touching (drag frame)
+ *   {"t":"abstap","x":16000,"y":8000,"ms":45}  // full click
+ *   {"t":"absswipe","x1":..,"y1":..,"x2":..,"y2":..,"ms":300,"steps":12}
+ *   {"t":"abspxtap","x":915,"y":279,"ms":45}   // same but accepts screen pixels
+ *   {"t":"abspxswipe","x1":..,"y1":..,"x2":..,"y2":..,"ms":300,"steps":12}
+ * Legacy move/press/release/tap/swipe remain available as compatibility shims.
  * Each line is acknowledged with {"ok":true} or {"ok":false,"err":"..."}.
  *
  * SPDX-License-Identifier: MIT
@@ -47,6 +59,40 @@ static void send_ack(int fd, bool ok, const char *err)
         n = snprintf(resp, sizeof(resp), "{\"ok\":false,\"err\":\"%s\"}\n", err ? err : "");
     }
     send(fd, resp, n, 0);
+}
+
+static uint16_t clamp_hid(int v)
+{
+    if (v < 0) return 0;
+    if (v > BLE_HID_ABS_MAX) return BLE_HID_ABS_MAX;
+    return (uint16_t)v;
+}
+
+static bool get_xy(cJSON *root, const char *kx, const char *ky,
+                   uint16_t *x, uint16_t *y)
+{
+    cJSON *jx = cJSON_GetObjectItem(root, kx);
+    cJSON *jy = cJSON_GetObjectItem(root, ky);
+    if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy)) return false;
+    *x = clamp_hid(jx->valueint);
+    *y = clamp_hid(jy->valueint);
+    return true;
+}
+
+static int jnum_or(cJSON *root, const char *k, int dflt)
+{
+    cJSON *j = cJSON_GetObjectItem(root, k);
+    return cJSON_IsNumber(j) ? j->valueint : dflt;
+}
+
+static bool get_px(cJSON *root, const char *kx, const char *ky, int *x, int *y)
+{
+    cJSON *jx = cJSON_GetObjectItem(root, kx);
+    cJSON *jy = cJSON_GetObjectItem(root, ky);
+    if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy)) return false;
+    *x = jx->valueint;
+    *y = jy->valueint;
+    return true;
 }
 
 static void handle_line(int fd, const char *line)
@@ -113,18 +159,19 @@ static void handle_line(int fd, const char *line)
     } else if (strcmp(type, "release") == 0) {
         ble_hid_mouse_release();
     } else if (strcmp(type, "swipe") == 0) {
+        /* Legacy: interpret dx/dy as screen pixels and perform a real
+         * absolute touch gesture from the screen centre. The old
+         * int8 sx=dx/10 trick overflowed and is no longer needed. */
         cJSON *dx = cJSON_GetObjectItem(root, "dx");
         cJSON *dy = cJSON_GetObjectItem(root, "dy");
         if (cJSON_IsNumber(dx) && cJSON_IsNumber(dy)) {
-            int steps = 10;
-            int8_t sx = (int8_t)(dx->valueint / steps);
-            int8_t sy = (int8_t)(dy->valueint / steps);
-            ble_hid_mouse_press(BLE_HID_MOUSE_LEFT);
-            for (int i = 0; i < steps; i++) {
-                ble_hid_mouse_move(sx, sy);
-                vTaskDelay(pdMS_TO_TICKS(8));
-            }
-            ble_hid_mouse_release();
+            int cx = ble_hid_screen_w() / 2;
+            int cy = ble_hid_screen_h() / 2;
+            ble_hid_touch_swipe(ble_hid_px_to_hid_x(cx),
+                                ble_hid_px_to_hid_y(cy),
+                                ble_hid_px_to_hid_x(cx + dx->valueint),
+                                ble_hid_px_to_hid_y(cy + dy->valueint),
+                                300, 12);
         } else {
             ok = false; err = "missing dx/dy";
         }
@@ -142,13 +189,64 @@ static void handle_line(int fd, const char *line)
         ble_hid_set_phone_mode(cJSON_IsNumber(v) ? (v->valueint != 0) : true);
     } else if (strcmp(type, "advertise") == 0) {
         ble_hid_restart_adv();
+    /* ---- Absolute Touch Screen commands ------------------------------- */
+    } else if (strcmp(type, "abscfg") == 0) {
+        ble_hid_set_screen((uint16_t)jnum_or(root, "w", ble_hid_screen_w()),
+                           (uint16_t)jnum_or(root, "h", ble_hid_screen_h()));
+    } else if (strcmp(type, "absdown") == 0) {
+        uint16_t x, y;
+        if (get_xy(root, "x", "y", &x, &y)) {
+            ble_hid_touch_down(x, y);
+        } else { ok = false; err = "missing x/y"; }
+    } else if (strcmp(type, "absup") == 0) {
+        ble_hid_touch_up();
+    } else if (strcmp(type, "abspos") == 0) {
+        uint16_t x, y;
+        if (get_xy(root, "x", "y", &x, &y)) {
+            /* "d" overrides Tip Switch; defaults to down (drag frame). */
+            ble_hid_touch_frame(x, y, jnum_or(root, "d", 1) != 0, true);
+        } else { ok = false; err = "missing x/y"; }
+    } else if (strcmp(type, "abstap") == 0) {
+        uint16_t x, y;
+        if (get_xy(root, "x", "y", &x, &y)) {
+            ble_hid_touch_tap(x, y, (uint32_t)jnum_or(root, "ms", 45));
+        } else { ok = false; err = "missing x/y"; }
+    } else if (strcmp(type, "absswipe") == 0) {
+        uint16_t x1, y1, x2, y2;
+        if (get_xy(root, "x1", "y1", &x1, &y1) &&
+            get_xy(root, "x2", "y2", &x2, &y2)) {
+            ble_hid_touch_swipe(x1, y1, x2, y2,
+                                (uint32_t)jnum_or(root, "ms", 300),
+                                (uint16_t)jnum_or(root, "steps", 12));
+        } else { ok = false; err = "missing x1/y1/x2/y2"; }
+    } else if (strcmp(type, "abspxtap") == 0) {
+        int px, py;
+        if (get_px(root, "x", "y", &px, &py)) {
+            ble_hid_touch_tap(ble_hid_px_to_hid_x(px),
+                              ble_hid_px_to_hid_y(py),
+                              (uint32_t)jnum_or(root, "ms", 45));
+        } else { ok = false; err = "missing x/y"; }
+    } else if (strcmp(type, "abspxswipe") == 0) {
+        int x1, y1, x2, y2;
+        if (get_px(root, "x1", "y1", &x1, &y1) &&
+            get_px(root, "x2", "y2", &x2, &y2)) {
+            ble_hid_touch_swipe(ble_hid_px_to_hid_x(x1), ble_hid_px_to_hid_y(y1),
+                                ble_hid_px_to_hid_x(x2), ble_hid_px_to_hid_y(y2),
+                                (uint32_t)jnum_or(root, "ms", 300),
+                                (uint16_t)jnum_or(root, "steps", 12));
+        } else { ok = false; err = "missing x1/y1/x2/y2"; }
     } else if (strcmp(type, "status") == 0) {
-        char resp[160];
+        char resp[200];
         int n = snprintf(resp, sizeof(resp),
-                         "{\"ok\":true,\"ready\":%d,\"connected\":%d,\"mode\":%d}\n",
+                         "{\"ok\":true,\"ready\":%d,\"connected\":%d,\"mode\":%d,"
+                         "\"abs\":1,\"fw\":\"%s\",\"max\":%d,"
+                         "\"w\":%u,\"h\":%u}\n",
                          ble_hid_ready() ? 1 : 0,
                          ble_hid_connected() ? 1 : 0,
-                         ble_hid_phone_mode() ? 1 : 0);
+                         ble_hid_phone_mode() ? 1 : 0,
+                         BLE_HID_FW_TAG, BLE_HID_ABS_MAX,
+                         (unsigned)ble_hid_screen_w(),
+                         (unsigned)ble_hid_screen_h());
         send(fd, resp, n, 0);
         cJSON_Delete(root);
         return;

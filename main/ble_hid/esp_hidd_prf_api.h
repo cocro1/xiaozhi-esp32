@@ -10,6 +10,7 @@
 #include "esp_bt_defs.h"
 #include "esp_gatt_defs.h"
 #include "esp_err.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +43,9 @@ typedef enum {
     ESP_HIDD_DEINIT_OK = 0,
     ESP_HIDD_DEINIT_FAILED = 0,
 } esp_hidd_deinit_state_t;
+
+/* Full-scale value of the absolute X/Y axes in the Touch Screen report map. */
+#define HID_TOUCH_MAX                32767
 
 #define LEFT_CONTROL_KEY_MASK        (1 << 0)
 #define LEFT_SHIFT_KEY_MASK          (1 << 1)
@@ -161,6 +165,15 @@ void esp_hidd_send_consumer_value(uint16_t conn_id, uint8_t key_cmd, bool key_pr
 void esp_hidd_send_keyboard_value(uint16_t conn_id, key_mask_t special_key_mask, uint8_t *keyboard_cmd, uint8_t num_key);
 
 void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y);
+
+/**
+ * @brief Send one absolute Touch Screen report (replaces the relative mouse).
+ *
+ * x/y are in HID units [0, HID_TOUCH_MAX] and map linearly to the display.
+ * Send down=true for ACTION_DOWN, down=false for ACTION_UP.
+ */
+void esp_hidd_send_touch_value(uint16_t conn_id, bool down, bool in_range,
+                               uint16_t x, uint16_t y);
 
 #ifdef __cplusplus
 }

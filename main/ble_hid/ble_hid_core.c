@@ -29,8 +29,14 @@
 
 static const char *TAG = "BLE_HID";
 
-/* Friendly name shown when the phone scans for Bluetooth devices. */
-#define HID_DEVICE_NAME "Xiaozhi-KM"
+/*
+ * Friendly name shown when the phone scans for Bluetooth devices.
+ * Renamed from "Xiaozhi-KM" on purpose: Android caches the HID report map
+ * per bond. After flashing the absolute-touch firmware the phone MUST forget
+ * ("unpair / ignore") the old Xiaozhi-KM entry and pair again with this new
+ * name, otherwise it keeps using the stale relative-mouse descriptor.
+ */
+#define HID_DEVICE_NAME "Xiaozhi-TS"
 
 typedef enum {
     BLE_HID_UNINIT = 0,
@@ -44,6 +50,13 @@ static bool            s_adv_started = false;
 static ble_hid_state_t s_state = BLE_HID_UNINIT;
 static bool            s_phone_mode = false;
 static TaskHandle_t    s_init_task = NULL;
+
+/* Absolute touch state. Coordinates are HID units [0, BLE_HID_ABS_MAX]. */
+static uint16_t s_screen_w = 1080;      /* logical display width in pixels  */
+static uint16_t s_screen_h = 2412;      /* logical display height in pixels */
+static uint16_t s_abs_x = 0;
+static uint16_t s_abs_y = 0;
+static bool     s_touch_down = false;
 
 /* ---- Advertising data / params (from ESP-IDF ble_hid_device_demo) -------- */
 static uint8_t hidd_service_uuid128[] = {
@@ -93,6 +106,7 @@ static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *
     case ESP_HIDD_EVENT_BLE_DISCONNECT:
         s_sec_conn = false;
         s_conn_id = 0;
+        s_touch_down = false;
         ESP_LOGI(TAG, "BLE host disconnected, restarting advertising");
         esp_ble_gap_start_advertising(&hidd_adv_params);
         break;
@@ -223,6 +237,7 @@ void ble_hid_stop(void)
     s_sec_conn = false;
     s_adv_started = false;
     s_conn_id = 0;
+    s_touch_down = false;
 }
 
 bool ble_hid_ready(void)     { return s_state == BLE_HID_READY && s_adv_started; }
@@ -285,31 +300,122 @@ void ble_hid_send_text(const char *utf8)
     }
 }
 
+/* ---- Absolute Touch Screen -------------------------------------------- */
+static uint16_t clamp_u16(int32_t v, uint16_t hi)
+{
+    if (v < 0) return 0;
+    if (v > hi) return hi;
+    return (uint16_t)v;
+}
+
+void ble_hid_set_screen(uint16_t width_px, uint16_t height_px)
+{
+    if (width_px >= 100 && width_px <= 4096)  s_screen_w = width_px;
+    if (height_px >= 100 && height_px <= 4096) s_screen_h = height_px;
+    ESP_LOGI(TAG, "screen mapping %ux%u px -> HID 0..%d",
+             (unsigned)s_screen_w, (unsigned)s_screen_h, (int)BLE_HID_ABS_MAX);
+}
+
+uint16_t ble_hid_screen_w(void) { return s_screen_w; }
+uint16_t ble_hid_screen_h(void) { return s_screen_h; }
+
+uint16_t ble_hid_px_to_hid_x(int px)
+{
+    return clamp_u16((int32_t)px * BLE_HID_ABS_MAX / (int32_t)s_screen_w, BLE_HID_ABS_MAX);
+}
+
+uint16_t ble_hid_px_to_hid_y(int py)
+{
+    return clamp_u16((int32_t)py * BLE_HID_ABS_MAX / (int32_t)s_screen_h, BLE_HID_ABS_MAX);
+}
+
+void ble_hid_touch_frame(uint16_t x, uint16_t y, bool down, bool in_range)
+{
+    if (!s_sec_conn) return;
+    s_abs_x = clamp_u16(x, BLE_HID_ABS_MAX);
+    s_abs_y = clamp_u16(y, BLE_HID_ABS_MAX);
+    s_touch_down = down;
+    esp_hidd_send_touch_value(s_conn_id, down, in_range, s_abs_x, s_abs_y);
+}
+
+void ble_hid_touch_down(uint16_t x, uint16_t y)
+{
+    ble_hid_touch_frame(x, y, true, true);
+}
+
+void ble_hid_touch_up(void)
+{
+    /* Keep X/Y of the last point so ACTION_UP carries the same position. */
+    ble_hid_touch_frame(s_abs_x, s_abs_y, false, false);
+    vTaskDelay(pdMS_TO_TICKS(8));
+}
+
+void ble_hid_touch_tap(uint16_t x, uint16_t y, uint32_t hold_ms)
+{
+    if (!s_sec_conn) return;
+    if (hold_ms < 10)  hold_ms = 10;
+    if (hold_ms > 3000) hold_ms = 3000;
+    ble_hid_touch_down(x, y);
+    vTaskDelay(pdMS_TO_TICKS(hold_ms));
+    ble_hid_touch_up();
+    vTaskDelay(pdMS_TO_TICKS(25));
+}
+
+void ble_hid_touch_swipe(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2,
+                         uint32_t duration_ms, uint16_t steps)
+{
+    if (!s_sec_conn) return;
+    if (steps < 2)   steps = 2;
+    if (steps > 80)  steps = 80;
+    if (duration_ms < 20)   duration_ms = 20;
+    if (duration_ms > 5000) duration_ms = 5000;
+
+    uint32_t frame_ms = duration_ms / steps;
+    if (frame_ms < 5) frame_ms = 5;
+
+    ble_hid_touch_down(x1, y1);
+    for (uint16_t i = 1; i <= steps; i++) {
+        int32_t x = (int32_t)x1 + ((int32_t)x2 - (int32_t)x1) * (int32_t)i / (int32_t)steps;
+        int32_t y = (int32_t)y1 + ((int32_t)y2 - (int32_t)y1) * (int32_t)i / (int32_t)steps;
+        ble_hid_touch_frame(clamp_u16(x, BLE_HID_ABS_MAX),
+                            clamp_u16(y, BLE_HID_ABS_MAX), true, true);
+        vTaskDelay(pdMS_TO_TICKS(frame_ms));
+    }
+    ble_hid_touch_up();
+}
+
+/* ---- Legacy mouse-shaped commands -> absolute touch compatibility ------ */
 void ble_hid_mouse_move(int8_t dx, int8_t dy)
 {
     if (!s_sec_conn) return;
-    esp_hidd_send_mouse_value(s_conn_id, 0, dx, dy);
+    /* Legacy callers mean screen pixels, not HID mickeys. Convert via the
+     * current logical screen size and only emit a frame while touching. */
+    int32_t px = (int32_t)s_abs_x * s_screen_w / BLE_HID_ABS_MAX + (int32_t)dx;
+    int32_t py = (int32_t)s_abs_y * s_screen_h / BLE_HID_ABS_MAX + (int32_t)dy;
+    uint16_t hx = clamp_u16((int32_t)px * BLE_HID_ABS_MAX / s_screen_w, BLE_HID_ABS_MAX);
+    uint16_t hy = clamp_u16((int32_t)py * BLE_HID_ABS_MAX / s_screen_h, BLE_HID_ABS_MAX);
+    s_abs_x = hx;
+    s_abs_y = hy;
+    if (s_touch_down) {
+        esp_hidd_send_touch_value(s_conn_id, true, true, hx, hy);
+    }
 }
 
 void ble_hid_mouse_press(uint8_t buttons)
 {
-    if (!s_sec_conn) return;
-    esp_hidd_send_mouse_value(s_conn_id, buttons, 0, 0);
+    (void)buttons;
+    ble_hid_touch_down(s_abs_x, s_abs_y);
 }
 
 void ble_hid_mouse_release(void)
 {
-    if (!s_sec_conn) return;
-    esp_hidd_send_mouse_value(s_conn_id, 0, 0, 0);
+    ble_hid_touch_up();
 }
 
 void ble_hid_mouse_click(uint8_t buttons)
 {
-    if (!s_sec_conn) return;
-    esp_hidd_send_mouse_value(s_conn_id, buttons, 0, 0);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    esp_hidd_send_mouse_value(s_conn_id, 0, 0, 0);
-    vTaskDelay(pdMS_TO_TICKS(20));
+    (void)buttons;
+    ble_hid_touch_tap(s_abs_x, s_abs_y, 45);
 }
 
 void ble_hid_media(uint8_t consumer_code, bool pressed)
